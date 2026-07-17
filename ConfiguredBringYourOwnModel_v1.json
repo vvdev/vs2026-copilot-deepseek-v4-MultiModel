@@ -1,0 +1,35 @@
+[
+  {
+    "Name": "Ollama",
+    "IsApiKeyAvailable": true,
+    "Models": [
+      {
+        "ProviderName": "Ollama",
+        "IsCustom": true,
+        "IsSelected": true,
+        "CustomURL": "http://localhost:5000",
+        "Id": "deepseek-v4-pro",
+        "DisplayName": "DeepSeek V4 Pro",
+        "IsToolCallingEnabled": true,
+        "IsThinkingEnabled": true,
+        "IsVisionEnabled": false,
+        "MaxInputTokens": 840000,
+        "MaxOutputTokens": 128000
+      },
+      {
+        "ProviderName": "Ollama",
+        "IsCustom": true,
+        "IsSelected": true,
+        "CustomURL": "http://localhost:5001",
+        "Id": "deepseek-v4-flash",
+        "DisplayName": "DeepSeek V4 Flash",
+        "IsToolCallingEnabled": true,
+        "IsThinkingEnabled": true,
+        "IsVisionEnabled": false,
+        "MaxInputTokens": 840000,
+        "MaxOutputTokens": 128000
+      }
+    ],
+    "Endpoint": 10
+  }
+]
