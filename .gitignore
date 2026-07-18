@@ -4,3 +4,5 @@ obj
 .vs
 appsettings.Development.json
 secrets.json
+/CopilotOllamaProxy.ConsoleApp/Properties/PublishProfiles/FolderProfile.pubxml.user
+/CopilotOllamaProxy.WinApp/Properties/PublishProfiles/FolderProfile.pubxml.user

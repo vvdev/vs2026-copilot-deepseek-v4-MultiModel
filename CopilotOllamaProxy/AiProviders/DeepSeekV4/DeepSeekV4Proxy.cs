@@ -316,13 +316,13 @@ public class DeepSeekV4Proxy
                 modified = requestedModel != MODEL;
                 continue;
             }
-            else if (prop.NameEquals("max_completion_tokens"))
-            {
-                var maxTokens = prop.Value.GetInt32();
-                w.WriteNumber("max_tokens", maxTokens);
-                modified = true;
-                continue;
-            }
+            //else if (prop.NameEquals("max_completion_tokens"))
+            //{
+            //    var maxTokens = prop.Value.GetInt32();
+            //    w.WriteNumber("max_tokens", maxTokens);
+            //    modified = true;
+            //    continue;
+            //}
             else if (!prop.NameEquals("messages"))
             {
                 prop.WriteTo(w);
