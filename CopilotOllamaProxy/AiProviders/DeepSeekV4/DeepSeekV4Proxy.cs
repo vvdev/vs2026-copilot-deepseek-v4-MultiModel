@@ -1,4 +1,11 @@
-﻿using System.Collections.Concurrent;
+﻿using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -309,7 +316,14 @@ public class DeepSeekV4Proxy
                 modified = requestedModel != MODEL;
                 continue;
             }
-            if (!prop.NameEquals("messages"))
+            else if (prop.NameEquals("max_completion_tokens"))
+            {
+                var maxTokens = prop.Value.GetInt32();
+                w.WriteNumber("max_tokens", maxTokens);
+                modified = true;
+                continue;
+            }
+            else if (!prop.NameEquals("messages"))
             {
                 prop.WriteTo(w);
                 continue;

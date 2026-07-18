@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/Models configuration/">
+    <File Path="appsettings.Development.json" />
+    <File Path="appsettings.json" />
+  </Folder>
   <Folder Name="/README/">
     <File Path="github_copilot_deepseek_v4-0.jpg" />
     <File Path="github_copilot_deepseek_v4-1.jpg" />
@@ -10,5 +14,7 @@
     <File Path="ConfiguredBringYourOwnModel_v1.json" />
     <File Path="CopilotModelsConfig.md" />
   </Folder>
-  <Project Path="CopilotOllamaProxy/CopilotOllamaProxy.csproj" />
+  <Project Path="CopilotOllamaProxy.ConsoleApp/CopilotOllamaProxy.ConsoleApp.csproj" Id="420f8ab9-631b-4eb4-8385-92537f55c714" DisplayName="CopilotOllamaProxy.ConsoleApp" />
+  <Project Path="CopilotOllamaProxy.WinApp/CopilotOllamaProxy.WinApp.csproj" Id="a3b70fe3-441d-4963-aef8-378f73e26f88" />
+  <Project Path="CopilotOllamaProxy/CopilotOllamaProxy.csproj" Id="154680d4-4962-46a1-81c7-1750e395fd10" />
 </Solution>

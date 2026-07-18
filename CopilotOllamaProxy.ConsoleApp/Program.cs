@@ -1,4 +1,4 @@
-// DeepSeek Copilot Proxy - Ultra-Low-Overhead Edition
+﻿// DeepSeek Copilot Proxy - Ultra-Low-Overhead Edition
 // Uses direct HTTP proxying optimized for minimal allocations.
 // Maintains full reasoning_content caching for multi-turn DeepSeek conversations.
 // iqmeta GmbH | Otto Neff
@@ -6,9 +6,12 @@
 
 using CopilotOllamaProxy.AiProviders;
 using CopilotOllamaProxy.AiProviders.DeepSeekV4;
+using CopilotOllamaProxy;
 
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Builder;
 
 // ─── Config ──────────────────────────────────────────────────────────
 var config = new ConfigurationBuilder()
