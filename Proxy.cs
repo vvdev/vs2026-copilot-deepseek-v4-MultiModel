@@ -9,6 +9,7 @@ public class Proxy
     private readonly string MODEL;
     private readonly string API_KEY;
     private readonly JsonSerializerOptions JsonOpts;
+    private readonly ILogger<Proxy> _logger;
 
     // ─── State ───────────────────────────────────────────────────────────
     ConcurrentDictionary<string, string> ReasoningCache = new(StringComparer.Ordinal);
@@ -22,7 +23,8 @@ public class Proxy
 
         var app = builder.Build();
 
-        var proxy = new Proxy(app, baseUrl, model, apiKey, jsonOpts);
+        var logger = app.Services.GetRequiredService<ILogger<Proxy>>();
+        var proxy = new Proxy(app, baseUrl, model, apiKey, jsonOpts, logger);
 
 
 
@@ -38,12 +40,13 @@ public class Proxy
         return app.RunAsync(cancellationToken);
     }
 
-    private Proxy(WebApplication app, string baseUrl, string model, string apiKey, JsonSerializerOptions jsonOpts)
+    private Proxy(WebApplication app, string baseUrl, string model, string apiKey, JsonSerializerOptions jsonOpts, ILogger<Proxy> logger)
     {
         BASE_URL = baseUrl;
         MODEL = model;
         API_KEY = apiKey;
         JsonOpts = jsonOpts;
+        _logger = logger;
 
 
         // Max-performance HTTP handler
@@ -273,201 +276,201 @@ public class Proxy
         });
     }
 
-// ══════════════════════════════════════════════════════════════════════
-// Local functions (capture ReasoningCache, _assistantMsgCounter, httpClient)
-// ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // Local functions (capture ReasoningCache, _assistantMsgCounter, httpClient)
+    // ══════════════════════════════════════════════════════════════════════
 
-string? ModifyRequest(JsonDocument doc)
-{
-    var root = doc.RootElement;
-    if (!root.TryGetProperty("messages", out var msgs))
-        return null;
-
-    int idx = 0;
-    bool modified = false;
-    using var ms = new MemoryStream();
-    using var w = new Utf8JsonWriter(ms);
-
-    w.WriteStartObject();
-    foreach (var prop in root.EnumerateObject())
+    string? ModifyRequest(JsonDocument doc)
     {
-        if (prop.NameEquals("model"))
-        {
-            w.WriteString("model", MODEL);
-            continue;
-        }
-        if (!prop.NameEquals("messages"))
-        {
-            prop.WriteTo(w);
-            continue;
-        }
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("messages", out var msgs))
+            return null;
 
-        w.WritePropertyName("messages");
-        w.WriteStartArray();
-        foreach (var msg in msgs.EnumerateArray())
+        int idx = 0;
+        bool modified = false;
+        using var ms = new MemoryStream();
+        using var w = new Utf8JsonWriter(ms);
+
+        w.WriteStartObject();
+        foreach (var prop in root.EnumerateObject())
         {
-            var role = msg.TryGetProperty("role", out var r) ? r.GetString() : null;
-            if (role == "assistant")
+            if (prop.NameEquals("model"))
             {
-                bool hasTc = msg.TryGetProperty("tool_calls", out var tcArr) && tcArr.GetArrayLength() > 0;
-                string? key = null;
+                w.WriteString("model", MODEL);
+                continue;
+            }
+            if (!prop.NameEquals("messages"))
+            {
+                prop.WriteTo(w);
+                continue;
+            }
 
-                if (hasTc)
+            w.WritePropertyName("messages");
+            w.WriteStartArray();
+            foreach (var msg in msgs.EnumerateArray())
+            {
+                var role = msg.TryGetProperty("role", out var r) ? r.GetString() : null;
+                if (role == "assistant")
                 {
-                    var ids = new List<string>();
-                    foreach (var tc in tcArr.EnumerateArray())
-                        if (tc.TryGetProperty("id", out var idE) && idE.ValueKind == JsonValueKind.String)
-                            ids.Add(idE.GetString()!);
-                    if (ids.Count > 0) key = $"toolcall:{string.Join("|", ids)}";
-                }
-                else
-                {
-                    key = $"assistant:{idx++}";
-                }
+                    bool hasTc = msg.TryGetProperty("tool_calls", out var tcArr) && tcArr.GetArrayLength() > 0;
+                    string? key = null;
 
-                if (key != null && ReasoningCache.TryGetValue(key, out var rc))
-                {
-                    bool needsInject = !msg.TryGetProperty("reasoning_content", out var exRc)
-                        || exRc.ValueKind != JsonValueKind.String
-                        || string.IsNullOrEmpty(exRc.GetString());
-
-                    if (needsInject)
+                    if (hasTc)
                     {
-                        w.WriteStartObject();
-                        foreach (var mp in msg.EnumerateObject())
-                            mp.WriteTo(w);
-                        w.WriteString("reasoning_content", rc);
-                        w.WriteEndObject();
-                        modified = true;
-                        continue;
+                        var ids = new List<string>();
+                        foreach (var tc in tcArr.EnumerateArray())
+                            if (tc.TryGetProperty("id", out var idE) && idE.ValueKind == JsonValueKind.String)
+                                ids.Add(idE.GetString()!);
+                        if (ids.Count > 0) key = $"toolcall:{string.Join("|", ids)}";
+                    }
+                    else
+                    {
+                        key = $"assistant:{idx++}";
+                    }
+
+                    if (key != null && ReasoningCache.TryGetValue(key, out var rc))
+                    {
+                        bool needsInject = !msg.TryGetProperty("reasoning_content", out var exRc)
+                            || exRc.ValueKind != JsonValueKind.String
+                            || string.IsNullOrEmpty(exRc.GetString());
+
+                        if (needsInject)
+                        {
+                            w.WriteStartObject();
+                            foreach (var mp in msg.EnumerateObject())
+                                mp.WriteTo(w);
+                            w.WriteString("reasoning_content", rc);
+                            w.WriteEndObject();
+                            modified = true;
+                            continue;
+                        }
                     }
                 }
+                msg.WriteTo(w);
             }
-            msg.WriteTo(w);
+            w.WriteEndArray();
         }
-        w.WriteEndArray();
+        w.WriteEndObject();
+        w.Flush();
+
+        return modified ? Encoding.UTF8.GetString(ms.ToArray()) : null;
     }
-    w.WriteEndObject();
-    w.Flush();
 
-    return modified ? Encoding.UTF8.GetString(ms.ToArray()) : null;
-}
-
-void CacheReasoningFromResponse(string json)
-{
-    try
+    void CacheReasoningFromResponse(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0) return;
-
-        var msg = choices[0].TryGetProperty("message", out var m) ? m : choices[0].TryGetProperty("delta", out var d) ? d : default;
-        if (msg.ValueKind == JsonValueKind.Undefined) return;
-        if (!msg.TryGetProperty("reasoning_content", out var rc) || string.IsNullOrEmpty(rc.GetString())) return;
-
-        string key;
-        if (msg.TryGetProperty("tool_calls", out var tcs) && tcs.GetArrayLength() > 0)
+        try
         {
-            var ids = new List<string>();
-            foreach (var tc in tcs.EnumerateArray())
-                if (tc.TryGetProperty("id", out var idE) && idE.ValueKind == JsonValueKind.String)
-                    ids.Add(idE.GetString()!);
-            key = $"toolcall:{string.Join("|", ids)}";
-        }
-        else
-        {
-            key = $"assistant:{Interlocked.Increment(ref _assistantMsgCounter) - 1}";
-        }
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0) return;
 
-        ReasoningCache[key] = rc.GetString()!;
-    }
-    catch { /* cache errors are non-critical */ }
-}
+            var msg = choices[0].TryGetProperty("message", out var m) ? m : choices[0].TryGetProperty("delta", out var d) ? d : default;
+            if (msg.ValueKind == JsonValueKind.Undefined) return;
+            if (!msg.TryGetProperty("reasoning_content", out var rc) || string.IsNullOrEmpty(rc.GetString())) return;
 
-async Task StreamAndCache(HttpResponseMessage upstream, HttpResponse downstream, CancellationToken ct)
-{
-    using var upstreamStream = await upstream.Content.ReadAsStreamAsync(ct);
-    using var reader = new StreamReader(upstreamStream);
-    await using var writer = new StreamWriter(downstream.Body, leaveOpen: true) { NewLine = "\n" };
-
-    var sb = new StringBuilder(4096);
-    List<string>? tcIds = null;
-    bool hasTc = false;
-    int? asstIdx = null;
-
-    while (true)
-    {
-        var line = await reader.ReadLineAsync(ct);
-        if (line == null) break;
-
-        if (line.StartsWith("data:"))
-        {
-            var json = line.Substring(5).TrimStart();
-            if (json.Length > 0 && json != "[DONE]")
+            string key;
+            if (msg.TryGetProperty("tool_calls", out var tcs) && tcs.GetArrayLength() > 0)
             {
-                try
-                {
-                    using var chunk = JsonDocument.Parse(json);
-                    var cr = chunk.RootElement;
-                    if (cr.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
-                    {
-                        var delta = choices[0].TryGetProperty("delta", out var d) ? d
-                            : choices[0].TryGetProperty("message", out var mm) ? mm : default;
+                var ids = new List<string>();
+                foreach (var tc in tcs.EnumerateArray())
+                    if (tc.TryGetProperty("id", out var idE) && idE.ValueKind == JsonValueKind.String)
+                        ids.Add(idE.GetString()!);
+                key = $"toolcall:{string.Join("|", ids)}";
+            }
+            else
+            {
+                key = $"assistant:{Interlocked.Increment(ref _assistantMsgCounter) - 1}";
+            }
 
-                        if (delta.ValueKind != JsonValueKind.Undefined)
+            ReasoningCache[key] = rc.GetString()!;
+        }
+        catch { /* cache errors are non-critical */ }
+    }
+
+    async Task StreamAndCache(HttpResponseMessage upstream, HttpResponse downstream, CancellationToken ct)
+    {
+        using var upstreamStream = await upstream.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(upstreamStream);
+        await using var writer = new StreamWriter(downstream.Body, leaveOpen: true) { NewLine = "\n" };
+
+        var sb = new StringBuilder(4096);
+        List<string>? tcIds = null;
+        bool hasTc = false;
+        int? asstIdx = null;
+
+        while (true)
+        {
+            var line = await reader.ReadLineAsync(ct);
+            if (line == null) break;
+
+            if (line.StartsWith("data:"))
+            {
+                var json = line.Substring(5).TrimStart();
+                if (json.Length > 0 && json != "[DONE]")
+                {
+                    try
+                    {
+                        using var chunk = JsonDocument.Parse(json);
+                        var cr = chunk.RootElement;
+                        if (cr.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
                         {
-                            if (delta.TryGetProperty("reasoning_content", out var rc) && rc.ValueKind == JsonValueKind.String)
+                            var delta = choices[0].TryGetProperty("delta", out var d) ? d
+                                : choices[0].TryGetProperty("message", out var mm) ? mm : default;
+
+                            if (delta.ValueKind != JsonValueKind.Undefined)
                             {
-                                var rct = rc.GetString();
-                                if (!string.IsNullOrEmpty(rct)) sb.Append(rct);
-                            }
-                            if (delta.TryGetProperty("tool_calls", out var tcs) && tcs.ValueKind == JsonValueKind.Array)
-                            {
-                                hasTc = true;
-                                foreach (var tc in tcs.EnumerateArray())
+                                if (delta.TryGetProperty("reasoning_content", out var rc) && rc.ValueKind == JsonValueKind.String)
                                 {
-                                    if (tc.TryGetProperty("id", out var idE) && idE.ValueKind == JsonValueKind.String)
+                                    var rct = rc.GetString();
+                                    if (!string.IsNullOrEmpty(rct)) sb.Append(rct);
+                                }
+                                if (delta.TryGetProperty("tool_calls", out var tcs) && tcs.ValueKind == JsonValueKind.Array)
+                                {
+                                    hasTc = true;
+                                    foreach (var tc in tcs.EnumerateArray())
                                     {
-                                        tcIds ??= new List<string>();
-                                        var id = idE.GetString()!;
-                                        if (!tcIds.Contains(id)) tcIds.Add(id);
+                                        if (tc.TryGetProperty("id", out var idE) && idE.ValueKind == JsonValueKind.String)
+                                        {
+                                            tcIds ??= new List<string>();
+                                            var id = idE.GetString()!;
+                                            if (!tcIds.Contains(id)) tcIds.Add(id);
+                                        }
                                     }
                                 }
-                            }
-                            if (choices[0].TryGetProperty("finish_reason", out var fr) && fr.ValueKind != JsonValueKind.Null)
-                            {
-                                var reasoning = sb.ToString();
-                                if (!string.IsNullOrEmpty(reasoning))
+                                if (choices[0].TryGetProperty("finish_reason", out var fr) && fr.ValueKind != JsonValueKind.Null)
                                 {
-                                    string key;
-                                    if (hasTc && tcIds != null && tcIds.Count > 0)
-                                        key = $"toolcall:{string.Join("|", tcIds)}";
-                                    else
-                                        key = $"assistant:{asstIdx ?? (int)(Interlocked.Increment(ref _assistantMsgCounter) - 1)}";
-                                    ReasoningCache[key] = reasoning;
+                                    var reasoning = sb.ToString();
+                                    if (!string.IsNullOrEmpty(reasoning))
+                                    {
+                                        string key;
+                                        if (hasTc && tcIds != null && tcIds.Count > 0)
+                                            key = $"toolcall:{string.Join("|", tcIds)}";
+                                        else
+                                            key = $"assistant:{asstIdx ?? (int)(Interlocked.Increment(ref _assistantMsgCounter) - 1)}";
+                                        ReasoningCache[key] = reasoning;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                catch { /* parse errors are non-critical */ }
+                    catch { /* parse errors are non-critical */ }
 
-                // Pass-through all data lines unmodified
-                await writer.WriteAsync("data: ");
-                await writer.WriteAsync(json);
-                await writer.WriteLineAsync();
+                    // Pass-through all data lines unmodified
+                    await writer.WriteAsync("data: ");
+                    await writer.WriteAsync(json);
+                    await writer.WriteLineAsync();
+                }
+                else
+                {
+                    await writer.WriteLineAsync(line);
+                }
             }
             else
             {
                 await writer.WriteLineAsync(line);
             }
-        }
-        else
-        {
-            await writer.WriteLineAsync(line);
-        }
 
-        await writer.FlushAsync(ct);
+            await writer.FlushAsync(ct);
+        }
     }
-}
 }
