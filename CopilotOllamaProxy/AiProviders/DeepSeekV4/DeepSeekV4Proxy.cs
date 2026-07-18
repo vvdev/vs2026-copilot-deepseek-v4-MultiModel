@@ -3,47 +3,54 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
-public class Proxy
+namespace CopilotOllamaProxy.AiProviders.DeepSeekV4;
+
+public class DeepSeekV4Proxy
 {
     private readonly string BASE_URL;
     private readonly string MODEL;
+    private readonly string ExpectedRequestedMODEL;
     private readonly string API_KEY;
     private readonly JsonSerializerOptions JsonOpts;
-    private readonly ILogger<Proxy> _logger;
+    private readonly ILogger<DeepSeekV4Proxy> _logger;
 
     // ─── State ───────────────────────────────────────────────────────────
     ConcurrentDictionary<string, string> ReasoningCache = new(StringComparer.Ordinal);
     long _assistantMsgCounter = 0;
 
 
-    public static Task CreateAndeRun(WebApplicationBuilder builder, string baseUrl, int port, string model, string apiKey, JsonSerializerOptions jsonOpts, CancellationToken cancellationToken = default)
+    public static Task CreateAndeRun(WebApplicationBuilder builder, string baseUrl, string apiKey, DeepSeekV4ModelSettings modelSettings, JsonSerializerOptions jsonOpts, CancellationToken cancellationToken = default)
     {
 
-        builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+        builder.WebHost.UseUrls($"http://0.0.0.0:{modelSettings.Port}");
 
         var app = builder.Build();
 
-        var logger = app.Services.GetRequiredService<ILogger<Proxy>>();
-        var proxy = new Proxy(app, baseUrl, model, apiKey, jsonOpts, logger);
+        var logger = app.Services.GetRequiredService<ILogger<DeepSeekV4Proxy>>();
+        var proxy = new DeepSeekV4Proxy(app, baseUrl, apiKey, modelSettings, jsonOpts, logger);
 
 
 
 
         // ─── Start ───────────────────────────────────────────────────────────
-        Console.WriteLine($"╔════════════════════════════════════════╗");
-        Console.WriteLine($"║   DeepSeek Copilot Proxy (Ultra)       ║");
-        Console.WriteLine($"╠════════════════════════════════════════╣");
-        Console.WriteLine($"║  Version: 2026.05.09                   ║");
-        Console.WriteLine($"║  Model:   {model,-32} ║");
-        Console.WriteLine($"║  URL:     http://localhost:{port}/v1      ║");
-        Console.WriteLine($"╚════════════════════════════════════════╝");
+        var version = "  Version: 2026.05.09";
+        var model = $"  Model:   {(modelSettings.CopilotId != modelSettings.UnderlyingId ? $"{modelSettings.CopilotId} -> {modelSettings.UnderlyingId}" : modelSettings.CopilotId)}";
+        var url = $"  URL:     http://localhost:{modelSettings.Port}/v1";
+        Console.WriteLine($"╔{new string('═', 70)}╗");
+        Console.WriteLine($"║{"  DeepSeek Copilot Proxy (Ultra)",-70}║");
+        Console.WriteLine($"╠{new string('═', 70)}╣");
+        Console.WriteLine($"║{version,-70}║");
+        Console.WriteLine($"║{model,-70}║");
+        Console.WriteLine($"║{url,-70}║");
+        Console.WriteLine($"╚{new string('═', 70)}╝");
         return app.RunAsync(cancellationToken);
     }
 
-    private Proxy(WebApplication app, string baseUrl, string model, string apiKey, JsonSerializerOptions jsonOpts, ILogger<Proxy> logger)
+    private DeepSeekV4Proxy(WebApplication app, string baseUrl, string apiKey, DeepSeekV4ModelSettings modelSettings, JsonSerializerOptions jsonOpts, ILogger<DeepSeekV4Proxy> logger)
     {
         BASE_URL = baseUrl;
-        MODEL = model;
+        MODEL = modelSettings.UnderlyingId;
+        ExpectedRequestedMODEL = modelSettings.CopilotId;
         API_KEY = apiKey;
         JsonOpts = jsonOpts;
         _logger = logger;
@@ -296,7 +303,10 @@ public class Proxy
         {
             if (prop.NameEquals("model"))
             {
+                var requestedModel = prop.Value.GetString();
+                if (requestedModel != ExpectedRequestedMODEL) throw new InvalidOperationException($"Invalid model requested: {requestedModel}. Expected: {ExpectedRequestedMODEL}");
                 w.WriteString("model", MODEL);
+                modified = requestedModel != MODEL;
                 continue;
             }
             if (!prop.NameEquals("messages"))

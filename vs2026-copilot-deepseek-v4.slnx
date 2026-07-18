@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/README/">
+    <File Path="github_copilot_deepseek_v4-0.jpg" />
+    <File Path="github_copilot_deepseek_v4-1.jpg" />
+    <File Path="github_copilot_deepseek_v4-2.jpg" />
+    <File Path="github_copilot_deepseek_v4-3.jpg" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/Sample configs/">
+    <File Path="ConfiguredBringYourOwnModel_v1.json" />
+    <File Path="CopilotModelsConfig.md" />
+  </Folder>
+  <Project Path="CopilotOllamaProxy/CopilotOllamaProxy.csproj" />
+</Solution>
