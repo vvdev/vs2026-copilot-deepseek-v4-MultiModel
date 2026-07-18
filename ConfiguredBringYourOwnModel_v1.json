@@ -5,29 +5,31 @@
     "Models": [
       {
         "ProviderName": "Ollama",
-        "IsCustom": true,
-        "IsSelected": true,
-        "CustomURL": "http://localhost:5000",
-        "Id": "deepseek-v4-pro",
-        "DisplayName": "DeepSeek V4 Pro",
-        "IsToolCallingEnabled": true,
-        "IsThinkingEnabled": true,
-        "IsVisionEnabled": false,
-        "MaxInputTokens": 840000,
-        "MaxOutputTokens": 128000
+        "isCustom": true,
+        "isSelected": true,
+        "customURL": "http://localhost:5000",
+        "modelId": "deepseek-v4-pro",
+        "displayName": "DeepSeek V4 Pro",
+        "isToolCallingEnabled": true,
+        "isVisionEnabled": false,
+        "maxInputTokens": 840000,
+        "maxOutputTokens": 128000,
+        "UseThinking": true,
+        "ThinkingBudget": 32000
       },
       {
         "ProviderName": "Ollama",
-        "IsCustom": true,
-        "IsSelected": true,
-        "CustomURL": "http://localhost:5001",
-        "Id": "deepseek-v4-flash",
-        "DisplayName": "DeepSeek V4 Flash",
-        "IsToolCallingEnabled": true,
-        "IsThinkingEnabled": true,
-        "IsVisionEnabled": false,
-        "MaxInputTokens": 840000,
-        "MaxOutputTokens": 128000
+        "isCustom": true,
+        "isSelected": false,
+        "customURL": "http://localhost:5001",
+        "modelId": "deepseek-v4-flash",
+        "displayName": "DeepSeek V4 Flash",
+        "isToolCallingEnabled": true,
+        "isVisionEnabled": false,
+        "maxInputTokens": 840000,
+        "maxOutputTokens": 128000,
+        "UseThinking": true,
+        "ThinkingBudget": 32000
       }
     ],
     "Endpoint": 10
