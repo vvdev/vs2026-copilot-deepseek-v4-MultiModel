@@ -41,6 +41,7 @@ JsonSerializerOptions JsonOpts = new()
 };
 
 // ─── Launch Proxy Instances ──────────────────────────────────────────
+int totalModels = 0;
 foreach (var provider in providerSettings)
 {
     switch (provider)
@@ -51,6 +52,7 @@ foreach (var provider in providerSettings)
                 var builder = WebApplication.CreateSlimBuilder(args);
                 apps.Add(DeepSeekV4Proxy.CreateAndeRun(
                     builder, ds.BaseUrl, ds.ApiKey, model, JsonOpts));
+                totalModels++;
             }
             break;
         default:
@@ -58,8 +60,9 @@ foreach (var provider in providerSettings)
             break;
     }
 }
+TrayManager.SetRunningModelsCount(totalModels);
 
 await Task.WhenAll(apps);
 
-System.Windows.Forms.Application.Exit();
+Application.Exit();
 Environment.Exit(0);
