@@ -31,6 +31,15 @@ public class DeepSeekV4Proxy
 
         builder.WebHost.UseUrls($"http://0.0.0.0:{modelSettings.Port}");
 
+        // Clear default logging providers and force console logger with ANSI colors
+        builder.Logging.ClearProviders();
+        builder.Logging.AddSimpleConsole(opts =>
+        {
+            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
+            opts.SingleLine = false;
+            opts.TimestampFormat = null;
+        });
+
         var app = builder.Build();
 
         var logger = app.Services.GetRequiredService<ILogger<DeepSeekV4Proxy>>();

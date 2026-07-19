@@ -71,6 +71,12 @@ internal sealed class TrayManager : IDisposable
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
+    [DllImport("kernel32.dll")]
+    private static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
@@ -92,6 +98,7 @@ internal sealed class TrayManager : IDisposable
     private const int    WM_SYSKEYDOWN     = 0x0104;
     private const uint   VK_F4             = 0x73;
     private const uint   GENERIC_WRITE    = 0x40000000;
+    private const uint   GENERIC_READ     = 0x80000000;
     private const uint   FILE_SHARE_WRITE = 0x00000002;
     private const uint   OPEN_EXISTING    = 3;
     private const int    STD_OUTPUT_HANDLE = -11;
@@ -99,8 +106,9 @@ internal sealed class TrayManager : IDisposable
     // SC_CLOSE / MF_GRAYED – used to grey out the X button so the user sees
     // that clicking X will hide rather than kill (optional visual hint).
     private const uint   SC_CLOSE         = 0xF060;
-    private const uint   MF_BYCOMMAND     = 0x00000000;
-    private const uint   MF_GRAYED        = 0x00000001;
+    private const uint   MF_BYCOMMAND                  = 0x00000000;
+    private const uint   MF_GRAYED                     = 0x00000001;
+    private const uint   ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004;
 
     // ── Fields ────────────────────────────────────────────────────────────────
     private readonly NotifyIcon             _trayIcon;
@@ -195,14 +203,14 @@ internal sealed class TrayManager : IDisposable
 
     /// <summary>
     /// Opens CONOUT$ via Win32 CreateFile (reliable after AllocConsole in a
-    /// WinExe process) and points Console.Out / Console.Error at it.
-    /// SetStdHandle keeps native callers in sync too.
+    /// WinExe process), enables ANSI color processing, and points Console.Out
+    /// / Console.Error at it. SetStdHandle keeps native callers in sync too.
     /// </summary>
     private static void RewireStreams()
     {
         var rawHandle = CreateFileW(
             "CONOUT$",
-            GENERIC_WRITE,
+            GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_WRITE,
             IntPtr.Zero,
             OPEN_EXISTING,
@@ -221,6 +229,10 @@ internal sealed class TrayManager : IDisposable
 
         Console.SetOut(writer);
         Console.SetError(writer);
+
+        // Enable VT processing for ANSI color codes
+        if (GetConsoleMode(rawHandle, out var mode))
+            SetConsoleMode(rawHandle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     }
 
     // ── CTRL_CLOSE_EVENT handler ──────────────────────────────────────────────
