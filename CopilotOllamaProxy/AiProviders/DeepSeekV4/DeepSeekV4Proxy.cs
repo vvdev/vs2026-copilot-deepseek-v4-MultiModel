@@ -114,63 +114,126 @@ public class DeepSeekV4Proxy
         {
             var ct = ctx.RequestAborted;
 
-            // Read and parse request
-            using var bodyReader = new StreamReader(ctx.Request.Body, Encoding.UTF8, false, 1024);
-            var rawBody = await bodyReader.ReadToEndAsync(ct);
-
-            using var doc = JsonDocument.Parse(rawBody);
-            var root = doc.RootElement;
-            var isStream = root.TryGetProperty("stream", out var sp) && sp.GetBoolean();
-
-            // Inject cached reasoning_content and override model
-            var modified = ModifyRequest(doc);
-            var bodyText = modified ?? rawBody;
-
-            // For non-streaming: direct proxy via HttpClient
-            if (!isStream)
+            try
             {
-                using var content = new StringContent(bodyText, Encoding.UTF8, "application/json");
-                using var response = await httpClient.SendAsync(
-                    new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = content },
-                    ct);
+                // Read and parse request
+                using var bodyReader = new StreamReader(ctx.Request.Body, Encoding.UTF8, false, 1024);
+                var rawBody = await bodyReader.ReadToEndAsync(ct);
 
-                var respBody = await response.Content.ReadAsStringAsync(ct);
+                using var doc = JsonDocument.Parse(rawBody);
+                var root = doc.RootElement;
+                var isStream = root.TryGetProperty("stream", out var sp) && sp.GetBoolean();
 
-                if (response.IsSuccessStatusCode)
-                    CacheReasoningFromResponse(respBody);
+                // Inject cached reasoning_content and override model
+                var modified = ModifyRequest(doc);
+                var bodyText = modified ?? rawBody;
 
-                ctx.Response.StatusCode = (int)response.StatusCode;
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync(respBody, ct);
-                return;
+                // For non-streaming: direct proxy via HttpClient
+                if (!isStream)
+                {
+                    try
+                    {
+                        using var content = new StringContent(bodyText, Encoding.UTF8, "application/json");
+                        using var response = await httpClient.SendAsync(
+                            new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = content },
+                            ct);
+
+                        var respBody = await response.Content.ReadAsStringAsync(ct);
+
+                        if (response.IsSuccessStatusCode)
+                            CacheReasoningFromResponse(respBody);
+
+                        ctx.Response.StatusCode = (int)response.StatusCode;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(respBody, ct);
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Exception during non-streaming HTTP call to upstream API");
+                        ctx.Response.StatusCode = 500;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                        {
+                            error = new
+                            {
+                                message = $"Proxy error: {ex.Message}",
+                                type = "proxy_exception",
+                                details = ex.GetType().Name
+                            }
+                        }, JsonOpts), ct);
+                        return;
+                    }
+                }
+
+                // ── Streaming ──
+                try
+                {
+                    ctx.Response.StatusCode = 200;
+                    ctx.Response.ContentType = "text/event-stream";
+                    ctx.Response.Headers.CacheControl = "no-cache";
+                    ctx.Response.Headers["X-Accel-Buffering"] = "no";
+
+                    using var reqContent = new StringContent(bodyText, Encoding.UTF8, "application/json");
+                    using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+                    {
+                        Content = reqContent
+                    };
+                    upstreamReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+                    using var upstreamResp = await httpClient.SendAsync(
+                        upstreamReq, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                    if (!upstreamResp.IsSuccessStatusCode)
+                    {
+                        var errBody = await upstreamResp.Content.ReadAsStringAsync(ct);
+                        ctx.Response.StatusCode = (int)upstreamResp.StatusCode;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(errBody, ct);
+                        return;
+                    }
+
+                    await StreamAndCache(upstreamResp, ctx.Response, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Exception during streaming HTTP call to upstream API");
+
+                    if (!ctx.Response.HasStarted)
+                    {
+                        ctx.Response.StatusCode = 500;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                        {
+                            error = new
+                            {
+                                message = $"Proxy error: {ex.Message}",
+                                type = "proxy_exception",
+                                details = ex.GetType().Name
+                            }
+                        }, JsonOpts), ct);
+                    }
+                }
             }
-
-            // ── Streaming ──
-            ctx.Response.StatusCode = 200;
-            ctx.Response.ContentType = "text/event-stream";
-            ctx.Response.Headers.CacheControl = "no-cache";
-            ctx.Response.Headers["X-Accel-Buffering"] = "no";
-
-            using var reqContent = new StringContent(bodyText, Encoding.UTF8, "application/json");
-            using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+            catch (Exception ex)
             {
-                Content = reqContent
-            };
-            upstreamReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                _logger.LogError(ex, "Unexpected exception in /v1/chat/completions endpoint");
 
-            using var upstreamResp = await httpClient.SendAsync(
-                upstreamReq, HttpCompletionOption.ResponseHeadersRead, ct);
-
-            if (!upstreamResp.IsSuccessStatusCode)
-            {
-                var errBody = await upstreamResp.Content.ReadAsStringAsync(ct);
-                ctx.Response.StatusCode = (int)upstreamResp.StatusCode;
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync(errBody, ct);
-                return;
+                if (!ctx.Response.HasStarted)
+                {
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                    {
+                        error = new
+                        {
+                            message = $"Internal error: {ex.Message}",
+                            type = "internal_exception",
+                            details = ex.GetType().Name
+                        }
+                    }, JsonOpts), ct);
+                }
             }
-
-            await StreamAndCache(upstreamResp, ctx.Response, ct);
         });
 
         // ─── Ollama /api/tags ────────────────────────────────────────────────
@@ -194,107 +257,171 @@ public class DeepSeekV4Proxy
         app.MapPost("/api/chat", async (HttpContext ctx) =>
         {
             var ct = ctx.RequestAborted;
-            using var reader = new StreamReader(ctx.Request.Body);
-            var body = await reader.ReadToEndAsync(ct);
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-            var isStream = root.TryGetProperty("stream", out var sp) && sp.GetBoolean();
 
-            // Convert Ollama messages to OpenAI format
-            var messages = new List<object>();
-            if (root.TryGetProperty("messages", out var omsgs))
+            try
             {
-                foreach (var msg in omsgs.EnumerateArray())
-                {
-                    var role = msg.GetProperty("role").GetString()!;
-                    var text = msg.TryGetProperty("content", out var c) ? c.GetString() ?? "" : "";
+                using var reader = new StreamReader(ctx.Request.Body);
+                var body = await reader.ReadToEndAsync(ct);
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                var isStream = root.TryGetProperty("stream", out var sp) && sp.GetBoolean();
 
-                    object content;
-                    if (msg.TryGetProperty("images", out var imgs) && imgs.GetArrayLength() > 0)
+                // Convert Ollama messages to OpenAI format
+                var messages = new List<object>();
+                if (root.TryGetProperty("messages", out var omsgs))
+                {
+                    foreach (var msg in omsgs.EnumerateArray())
                     {
-                        var parts = new List<object> { new { type = "text", text } };
-                        foreach (var img in imgs.EnumerateArray())
+                        var role = msg.GetProperty("role").GetString()!;
+                        var text = msg.TryGetProperty("content", out var c) ? c.GetString() ?? "" : "";
+
+                        object content;
+                        if (msg.TryGetProperty("images", out var imgs) && imgs.GetArrayLength() > 0)
                         {
-                            var url = img.GetString()!;
-                            if (!url.StartsWith("data:") && !url.StartsWith("http"))
-                                url = $"data:image/png;base64,{url}";
-                            parts.Add(new { type = "image_url", image_url = new { url } });
+                            var parts = new List<object> { new { type = "text", text } };
+                            foreach (var img in imgs.EnumerateArray())
+                            {
+                                var url = img.GetString()!;
+                                if (!url.StartsWith("data:") && !url.StartsWith("http"))
+                                    url = $"data:image/png;base64,{url}";
+                                parts.Add(new { type = "image_url", image_url = new { url } });
+                            }
+                            content = parts;
                         }
-                        content = parts;
+                        else content = text;
+
+                        messages.Add(new { role, content });
                     }
-                    else content = text;
-
-                    messages.Add(new { role, content });
-                }
-            }
-
-            var reqObj = new Dictionary<string, object?>
-            {
-                ["model"] = MODEL,
-                ["messages"] = messages,
-                ["stream"] = isStream,
-                ["max_tokens"] = 8192
-            };
-            if (root.TryGetProperty("tools", out var tools))
-                reqObj["tools"] = tools;
-
-            var reqJson = JsonSerializer.Serialize(reqObj, JsonOpts);
-            using var reqContent = new StringContent(reqJson, Encoding.UTF8, "application/json");
-
-            if (!isStream)
-            {
-                using var resp = await httpClient.SendAsync(
-                    new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = reqContent }, ct);
-                var respBody = await resp.Content.ReadAsStringAsync(ct);
-
-                if (!resp.IsSuccessStatusCode)
-                {
-                    ctx.Response.StatusCode = (int)resp.StatusCode;
-                    await ctx.Response.WriteAsync(respBody, ct);
-                    return;
                 }
 
-                CacheReasoningFromResponse(respBody);
-
-                using var odoc = JsonDocument.Parse(respBody);
-                var msg = odoc.RootElement.GetProperty("choices")[0].GetProperty("message");
-                var ollamaResp = new Dictionary<string, object?>
+                var reqObj = new Dictionary<string, object?>
                 {
                     ["model"] = MODEL,
-                    ["created_at"] = DateTime.UtcNow.ToString("o"),
-                    ["message"] = new Dictionary<string, object?>
-                    {
-                        ["role"] = "assistant",
-                        ["content"] = msg.GetProperty("content").GetString() ?? ""
-                    },
-                    ["done"] = true,
-                    ["done_reason"] = "stop"
+                    ["messages"] = messages,
+                    ["stream"] = isStream,
+                    ["max_tokens"] = 8192
                 };
-                if (msg.TryGetProperty("tool_calls", out var tcs))
-                    ((Dictionary<string, object?>)ollamaResp["message"]!)["tool_calls"] = tcs;
+                if (root.TryGetProperty("tools", out var tools))
+                    reqObj["tools"] = tools;
 
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.WriteAsync(JsonSerializer.Serialize(ollamaResp, JsonOpts), ct);
-            }
-            else
-            {
-                ctx.Response.StatusCode = 200;
-                ctx.Response.ContentType = "text/event-stream";
-                ctx.Response.Headers["X-Accel-Buffering"] = "no";
+                var reqJson = JsonSerializer.Serialize(reqObj, JsonOpts);
+                using var reqContent = new StringContent(reqJson, Encoding.UTF8, "application/json");
 
-                using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+                if (!isStream)
                 {
-                    Content = reqContent
-                };
-                upstreamReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                    try
+                    {
+                        using var resp = await httpClient.SendAsync(
+                            new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions") { Content = reqContent }, ct);
+                        var respBody = await resp.Content.ReadAsStringAsync(ct);
 
-                using var upstreamResp = await httpClient.SendAsync(
-                    upstreamReq, HttpCompletionOption.ResponseHeadersRead, ct);
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            ctx.Response.StatusCode = (int)resp.StatusCode;
+                            await ctx.Response.WriteAsync(respBody, ct);
+                            return;
+                        }
 
-                if (!upstreamResp.IsSuccessStatusCode)
-                    return;
+                        CacheReasoningFromResponse(respBody);
 
-                await StreamAndCache(upstreamResp, ctx.Response, ct);
+                        using var odoc = JsonDocument.Parse(respBody);
+                        var msg = odoc.RootElement.GetProperty("choices")[0].GetProperty("message");
+                        var ollamaResp = new Dictionary<string, object?>
+                        {
+                            ["model"] = MODEL,
+                            ["created_at"] = DateTime.UtcNow.ToString("o"),
+                            ["message"] = new Dictionary<string, object?>
+                            {
+                                ["role"] = "assistant",
+                                ["content"] = msg.GetProperty("content").GetString() ?? ""
+                            },
+                            ["done"] = true,
+                            ["done_reason"] = "stop"
+                        };
+                        if (msg.TryGetProperty("tool_calls", out var tcs))
+                            ((Dictionary<string, object?>)ollamaResp["message"]!)["tool_calls"] = tcs;
+
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(JsonSerializer.Serialize(ollamaResp, JsonOpts), ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Exception during Ollama non-streaming HTTP call to upstream API");
+                        ctx.Response.StatusCode = 500;
+                        ctx.Response.ContentType = "application/json";
+                        await ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                        {
+                            error = new
+                            {
+                                message = $"Proxy error: {ex.Message}",
+                                type = "proxy_exception",
+                                details = ex.GetType().Name
+                            }
+                        }, JsonOpts), ct);
+                        return;
+                    }
+                }
+                else
+                {
+                    try
+                    {
+                        ctx.Response.StatusCode = 200;
+                        ctx.Response.ContentType = "text/event-stream";
+                        ctx.Response.Headers["X-Accel-Buffering"] = "no";
+
+                        using var upstreamReq = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+                        {
+                            Content = reqContent
+                        };
+                        upstreamReq.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+                        using var upstreamResp = await httpClient.SendAsync(
+                            upstreamReq, HttpCompletionOption.ResponseHeadersRead, ct);
+
+                        if (!upstreamResp.IsSuccessStatusCode)
+                            return;
+
+                        await StreamAndCache(upstreamResp, ctx.Response, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Exception during Ollama streaming HTTP call to upstream API");
+
+                        if (!ctx.Response.HasStarted)
+                        {
+                            ctx.Response.StatusCode = 500;
+                            ctx.Response.ContentType = "application/json";
+                            await ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                            {
+                                error = new
+                                {
+                                    message = $"Proxy error: {ex.Message}",
+                                    type = "proxy_exception",
+                                    details = ex.GetType().Name
+                                }
+                            }, JsonOpts), ct);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected exception in /api/chat endpoint");
+
+                if (!ctx.Response.HasStarted)
+                {
+                    ctx.Response.StatusCode = 500;
+                    ctx.Response.ContentType = "application/json";
+                    await ctx.Response.WriteAsync(JsonSerializer.Serialize(new
+                    {
+                        error = new
+                        {
+                            message = $"Internal error: {ex.Message}",
+                            type = "internal_exception",
+                            details = ex.GetType().Name
+                        }
+                    }, JsonOpts), ct);
+                }
             }
         });
     }
@@ -415,7 +542,19 @@ public class DeepSeekV4Proxy
                 key = $"assistant:{Interlocked.Increment(ref _assistantMsgCounter) - 1}";
             }
 
-            ReasoningCache[key] = rc.GetString()!;
+            var reasoning = rc.GetString();
+
+            ReasoningCache[key] = reasoning!;
+
+            if (!string.IsNullOrEmpty(reasoning))
+            {
+                _logger.LogInformation($"Caching reasoning_content for key '{key}' (length: {reasoning.Length})");
+                _logger.LogInformation(@$"*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*
+*?*?* reasoning_content:                        *?*?*
+*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*
+{reasoning}
+*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*");
+            }
         }
         catch { /* cache errors are non-critical */ }
     }
@@ -481,6 +620,13 @@ public class DeepSeekV4Proxy
                                         else
                                             key = $"assistant:{asstIdx ?? (int)(Interlocked.Increment(ref _assistantMsgCounter) - 1)}";
                                         ReasoningCache[key] = reasoning;
+
+                                        _logger.LogInformation($"Caching reasoning_content for key '{key}' (length: {reasoning.Length})");
+                                        _logger.LogInformation(@$"*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*
+*?*?* reasoning_content:                        *?*?*
+*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*
+{reasoning}
+*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*?*");
                                     }
                                 }
                             }
